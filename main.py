@@ -47,28 +47,6 @@ class VaultConfig:
     recoveryauth_seed: bytes
     network: str = "regtest"
 
-    def tojson(self) -> dict:
-        d = dict(
-            (k, v)
-            for k, v in self.__dict__.items()
-            if k
-            in (
-                "spend_delay",
-                "network",
-            )
-        )
-        d["recovery_pubkey"] = self.recovery_pubkey.hex()
-        d["trigger_seed"] = self.trigger_seed.hex()
-        d["recoveryauth_seed"] = self.recoveryauth_seed.hex()
-        return d
-
-    @classmethod
-    def fromjson(cls, d: dict) -> "VaultConfig":
-        d["recovery_pubkey"] = bytes.fromhex(d["recovery_pubkey"])
-        d["trigger_seed"] = bytes.fromhex(d["trigger_seed"])
-        d["recoveryauth_seed"] = bytes.fromhex(d["recoveryauth_seed"])
-        return cls(**d)
-
     @cached_property
     def recov_taproot_info(self) -> TaprootInfo:
         return script.taproot_construct(self.recovery_pubkey[1:])
@@ -164,26 +142,6 @@ class VaultSpec:
         self.output_pubkey = self.taproot_info.output_pubkey
         self.address = core.address.output_key_to_p2tr(self.output_pubkey)
 
-    def tojson(self) -> dict:
-        cp = dict(
-            (k, v)
-            for k, v in self.__dict__.items()
-            if k in ("vault_num", "spend_delay", "leaf_update_script_body")
-        )
-        cp["trigger_pubkey"] = self.trigger_pubkey.hex()
-        cp["recovery_pubkey"] = self.recovery_pubkey.hex()
-        cp["recovauth_pubkey"] = self.recovauth_pubkey.hex()
-        cp["recovery_spk"] = self.recovery_spk.hex()
-        return cp
-
-    @classmethod
-    def fromjson(cls, d: dict) -> "VaultSpec":
-        d["recovery_spk"] = CScript(bytes.fromhex(d["recovery_spk"]))
-        d["trigger_pubkey"] = bytes.fromhex(d['trigger_pubkey'])
-        d["recovery_pubkey"] = bytes.fromhex(d['recovery_pubkey'])
-        d["recovauth_pubkey"] = bytes.fromhex(d['recovauth_pubkey'])
-        return cls(**d)
-
 
 @dataclass
 class TriggerSpec:
@@ -192,22 +150,6 @@ class TriggerSpec:
     vault_specs: list[VaultSpec]
     destination_ctv_hash: bytes
     trigger_value_sats: int
-
-    @classmethod
-    def fromjson(cls, d: dict) -> "TriggerSpec":
-        specs = map(VaultSpec.fromjson, d["vault_specs"])
-        return cls(
-            list(specs),
-            bytes.fromhex(d["destination_ctv_hash"]),
-            d["trigger_value_sats"],
-        )
-
-    def tojson(self) -> dict:
-        d: dict[str, t.Any] = {}
-        d["trigger_value_sats"] = self.trigger_value_sats
-        d["destination_ctv_hash"] = self.destination_ctv_hash.hex()
-        d["vault_specs"] = [v.tojson() for v in self.vault_specs]
-        return d
 
     def __post_init__(self):
         specs = self.vault_specs
@@ -669,21 +611,6 @@ class WithdrawalBundle:
     trigger_tx: CTransaction
     withdrawal_tx: CTransaction
 
-    def tojson(self) -> dict:
-        return dict(
-            trigger_spec=self.trigger_spec.tojson(),
-            trigger_tx=self.trigger_tx.tohex(),
-            withdrawal_tx=self.withdrawal_tx.tohex(),
-        )
-
-    @classmethod
-    def fromjson(cls, d: dict) -> "WithdrawalBundle":
-        return cls(
-            TriggerSpec.fromjson(d["trigger_spec"]),
-            CTransaction.fromhex(d["trigger_tx"]),
-            CTransaction.fromhex(d["withdrawal_tx"]),
-        )
-
 
 def _are_all_vaultspecs(lst: t.Any) -> t.TypeGuard[list[VaultSpec]]:
     return all(isinstance(s, VaultSpec) for s in lst)
@@ -829,32 +756,74 @@ class WalletState:
 
     filepath: Path | None = None
 
-    def tojson(self):
-        d = dict(self.__dict__)
-        d["config"] = self.config.tojson()
-        d["inflight_triggers"] = [bundle.tojson() for bundle in self.inflight_triggers]
-        d.pop("filepath")
-        return d
-
-    @classmethod
-    def fromjson(cls, d: dict) -> "WalletState":
-        d["config"] = VaultConfig.fromjson(d["config"])
-        d["inflight_triggers"] = list(
-            map(WithdrawalBundle.fromjson, d["inflight_triggers"])
-        )
-        return cls(**d)
+    _json_exclude = ('filepath',)
 
     def save(self):
         assert self.filepath
-        print(self.tojson())
-        self.filepath.write_text(json.dumps(self.tojson(), indent=2))
+        self.filepath.write_text(Json.dumps(self, indent=2))
         log.info("saved wallet state to %s", self.filepath)
 
     @classmethod
     def load(cls, filepath: Path) -> "WalletState":
-        obj = cls.fromjson(json.loads(filepath.read_text()))
+        obj = Json.loads(filepath.read_text())
         obj.filepath = filepath
         return obj
+
+
+class Json:
+    """
+    Do a bunch of custom JSON serialization to save us writing a lot of boilerplate.
+    """
+    ALLOWED_CLASSES = {
+        c.__name__: c for c in (
+            WalletState, WithdrawalBundle, VaultConfig, VaultSpec, TriggerSpec,
+        )
+    }
+    class Encoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, bytes):
+                return {'_type': 'hex', '_val': o.hex()}
+            elif isinstance(o, CScript):
+                return {'_type': 'CScript', '_val': o.hex()}
+            elif isinstance(o, CTransaction):
+                return {'_type': 'CTransaction', '_val': o.tohex()}
+
+            elif (cls := Json.ALLOWED_CLASSES.get(o.__class__.__name__)):
+                d = dict(o.__dict__)
+                if (allowed_fields := getattr(o, '__dataclass_fields__', [])):
+                    d = {k: v for k, v in o.__dict__.items() if k in allowed_fields}
+                for ex in getattr(o, '_json_exclude', []):
+                    d.pop(ex)
+                d['__class__'] = cls.__name__
+                return d
+
+            return super().default(o)
+
+
+    @classmethod
+    def object_hook(cls, o: dict) -> object:
+        if (ObjectClass := cls.ALLOWED_CLASSES.get(o.get('__class__', ''))):
+            o.pop('__class__')
+            return ObjectClass(**o)
+
+        if (type_ := o.get('_type')) and (val := o.get('_val')) is not None:
+            match type_:
+                case "hex":
+                    return bytes.fromhex(val)
+                case 'CScript':
+                    return CScript(bytes.fromhex(val))
+                case 'CTransaction':
+                    return CTransaction.fromhex(val)
+
+        return o
+
+    @classmethod
+    def dumps(cls, *args, **kwargs):
+        return json.dumps(*args, cls=cls.Encoder, **kwargs)
+
+    @classmethod
+    def loads(cls, *args, **kwargs):
+        return json.loads(*args, object_hook=Json.object_hook, **kwargs)
 
 
 def load(cfg_file: Path | str) -> tuple[WalletState, BitcoinRPC, FeeWallet]:
