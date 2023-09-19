@@ -7,7 +7,7 @@ name = "opvault"
 version = "0.0.1"
 dependencies = [
     'importlib-metadata; python_version<"3.11"',
-    'verystable',
+    'verystable@git+https://github.com/jamesob/verystable',
     'bip32',
     'clii',
 ]
