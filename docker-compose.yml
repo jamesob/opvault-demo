@@ -1,0 +1,21 @@
+version: '3.9'
+
+services:
+  bitcoin:
+    image: jamesob/bitcoin-opvault-inq
+    # if you want to build it yourself:
+    # build: 
+    #   context: ./
+    #   dockerfile: bitcoin.Dockerfile
+    volumes:
+      - ./bitcoin-datadir:/root/.bitcoin
+
+  demo:
+    build:
+      context: ./
+    volumes:
+      - ./:/app
+      # Share bitcoin's datadir so that we can make RPC calls with cookie credentials.
+      - ./bitcoin-datadir:/root/.bitcoin
+    links:
+      - bitcoin
