@@ -103,7 +103,7 @@ EOF
 )
 
 vault-help() {
-  echo $GUIDE
+  echo $VAULT_GUIDE
 }
 
 vault-help

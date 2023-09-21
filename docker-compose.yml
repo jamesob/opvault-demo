@@ -6,12 +6,12 @@ services:
     # If you want to build bitcoind yourself, or are having permission problems, 
     # uncomment below.
     #
-    build: 
-      context: ./
-      dockerfile: bitcoin.Dockerfile
-      args:
-        - UID
-        - GID
+    # build: 
+    #   context: ./
+    #   dockerfile: bitcoin.Dockerfile
+    #   args:
+    #     - UID
+    #     - GID
     volumes:
       - ./bitcoin-datadir:/home/user/.bitcoin
 
