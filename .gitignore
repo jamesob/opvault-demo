@@ -3,3 +3,7 @@ config.json
 secrets.json
 *.log
 bitcoin-datadir
+.bash_history
+.cache/
+.local/
+.python_history
