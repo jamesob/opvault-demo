@@ -11,8 +11,12 @@ build() {
 }
 
 start-bitcoin() {
-  docker-compose up -d bitcoin
-  docker-compose ps
+  if [ "$1" = "fg" ]; then
+      docker-compose up bitcoin
+  else
+      docker-compose up -d bitcoin
+      docker-compose ps
+  fi
 }
 
 demo() {
@@ -109,4 +113,11 @@ vault-help() {
   echo $VAULT_GUIDE
 }
 
-vault-help
+clean() {
+    docker-compose down
+    rm -r bitcoin-datadir config.json secrets.json
+}
+
+if [ "$1" != "-q" ]; then
+    vault-help
+fi
