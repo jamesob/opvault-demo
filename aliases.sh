@@ -6,6 +6,7 @@ build() {
     echo "  section in docker-compose.yml!"
     echo
   fi
+  mkdir -p bitcoin-datadir
   docker-compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)
 }
 
@@ -66,7 +67,8 @@ Build the containers and start bitcoind:
   build
   start-bitcoin
 
-Generate a config and start the watchtower:
+Generate a config and start the watchtower. This will run in one window, 
+all other commands will happen in another:
   
   demo ./createconfig.py
   demo ./main.py
@@ -82,6 +84,7 @@ Fund the fee wallet:
 Deposit to the vault:
   
   bitcoin-cli loadwallet fees  # if necessary
+  mine 200  # mine another 200 blocks to the loaded wallet
   bitcoin-cli sendtoaddress [addr] [amt-btc]
   mine  # mine a block to actually process the deposit
 
