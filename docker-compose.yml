@@ -3,19 +3,27 @@ version: '3.9'
 services:
   bitcoin:
     image: jamesob/bitcoin-opvault-inq
-    # if you want to build it yourself:
-    # build: 
-    #   context: ./
-    #   dockerfile: bitcoin.Dockerfile
+    # If you want to build bitcoind yourself, or are having permission problems, 
+    # uncomment below.
+    #
+    build: 
+      context: ./
+      dockerfile: bitcoin.Dockerfile
+      args:
+        - UID
+        - GID
     volumes:
-      - ./bitcoin-datadir:/root/.bitcoin
+      - ./bitcoin-datadir:/home/user/.bitcoin
 
   demo:
     build:
       context: ./
+      args:
+        - UID
+        - GID
     volumes:
-      - ./:/app
+      - ./:/home/user
       # Share bitcoin's datadir so that we can make RPC calls with cookie credentials.
-      - ./bitcoin-datadir:/root/.bitcoin
+      - ./bitcoin-datadir:/home/user/.bitcoin
     links:
       - bitcoin
