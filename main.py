@@ -22,7 +22,7 @@ from verystable.core import script
 from verystable.core.script import CScript
 from verystable.core.messages import COutPoint, CTxOut, CTxIn
 from verystable.wallet import SingleAddressWallet
-from verystable.serialization import Json
+from verystable.serialization import VSJson
 from rich import print
 
 import logging
@@ -40,6 +40,10 @@ BITCOIN_RPC_URL = os.environ.get('BITCOIN_RPC_URL', 'http://bitcoin:18443')
 
 @dataclass
 class VaultConfig:
+    """
+    Static, non-secret configuration that describes the compatible parameters for a
+    set of vault coins.
+    """
     spend_delay: int
     recovery_pubkey: bytes
     recoveryauth_pubkey: bytes
@@ -171,6 +175,21 @@ class PaymentDestination:
         )
 
 
+@dataclass(frozen=True)
+class Outpoint:
+    txid: str
+    n: int
+
+    def __str__(self) -> str:
+        return f"{self.txid}:{self.n}"
+
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+    def __eq__(self, o) -> bool:
+        return self.__dict__ == o.__dict__
+
+
 @dataclass
 class TriggerSpec:
     """Manages script constructions and parameters for a triggered vault coin."""
@@ -184,7 +203,8 @@ class TriggerSpec:
     # The following are set after the trigger transaction is actually constructed.
     trigger_vout_idx: int = -1
     revault_vout_idx: int | None = None
-    spent_vault_outpoints: list["Outpoint"] = field(default_factory=list)
+    spent_vault_outpoints: list[Outpoint] = field(default_factory=list)
+    spent_fee_outpoints: list[Outpoint] = field(default_factory=list)
     trigger_tx: CTransaction | None = None
     withdrawal_tx: CTransaction | None = None
     # Used only for logging.
@@ -238,22 +258,6 @@ class TriggerSpec:
         return self.vault_specs[0].spend_delay
 
     @cached_property
-    def withdrawal_witness(self) -> list[bytes | CScript]:
-        """Bottom of witness stack when spending a trigger to final withdrawal."""
-        return [
-            self.taproot_info.leaves["withdraw"].script,
-            self.taproot_info.controlblock_for_script_spend("withdraw"),
-        ]
-
-    @cached_property
-    def recover_wit_fragment(self) -> list[bytes | CScript]:
-        """Bottom of witness stack when spending a trigger into a recovery."""
-        return [
-            self.taproot_info.leaves["recover"].script,
-            self.taproot_info.controlblock_for_script_spend("recover"),
-        ]
-
-    @cached_property
     def recovery_address(self) -> str:
         return self.vault_specs[0].recovery_address
 
@@ -264,15 +268,6 @@ def txid_to_int(txid: str) -> int:
 
 def btc_to_sats(btc) -> int:
     return int(btc * core.messages.COIN)
-
-
-@dataclass(frozen=True)
-class Outpoint:
-    txid: str
-    n: int
-
-    def __str__(self):
-        return f"{self.txid}:{self.n}"
 
 
 @dataclass(frozen=True)
@@ -302,6 +297,9 @@ class Utxo:
     def outpoint_str(self) -> str:
         return str(self.outpoint)
 
+    def __hash__(self) -> int:
+        return hash(str(self.outpoint))
+
 
 @dataclass(frozen=True)
 class VaultUtxo(Utxo):
@@ -315,14 +313,15 @@ class VaultUtxo(Utxo):
 
     @property
     def spec(self) -> VaultSpec | TriggerSpec:
-        return self.trigger_spec or self.vault_spec
+        assert (s := self.trigger_spec or self.vault_spec)
+        return s
 
     def get_taproot_info(self):
         """Return the most relevant taproot info."""
         return self.spec.taproot_info
 
     def __str__(self) -> str:
-        return f"{self.address} ({self.value_sats} sats) ({str(self.outpoint)})"
+        return (f"{str(self.outpoint)} ({self.value_sats} sats)\n    (addr={self.address})")
 
     def __hash__(self) -> int:
         return hash(self.outpoint)
@@ -331,11 +330,11 @@ class VaultUtxo(Utxo):
 @dataclass
 class VaultsState:
     """
-    A reflection of the current state of the vault.
-    Tracks all assocated UTXOs within some gap limit.
+    A snapshot of the current state of the vault at a particular block (tip).
 
-    A "pure function" in the sense tha it doesn't make RPC calls or manipulate
-    any state outside of what is maintained in this class.
+    A "pure" class in the sense tha it doesn't make RPC calls or manipulate
+    any state outside of what is maintained in this class - it just interpets
+    a history of blocks to build a snapshot of the vault.
     """
 
     blockhash: str
@@ -362,6 +361,10 @@ class VaultsState:
 
             self.txid_to_trigger_spec[trig.id] = trig
 
+        log.info(
+            "vault outpoints to good triggers: %s", {
+                k: v.id for k, v in self.vault_outpoint_to_good_trigger.items()})
+
     def update_for_tx(self, height: int, block: dict, tx: dict) -> None:
         txid = tx["txid"]
         trig_spec = self.txid_to_trigger_spec.get(txid)
@@ -370,11 +373,12 @@ class VaultsState:
         def get_spk(vout: dict) -> str | None:
             return vout.get("scriptPubKey", {}).get("address")
 
-        # Detect deposits
+        # Examine outputs
         for vout in tx["vout"]:
             if addr := get_spk(vout):
                 op = Outpoint(txid, vout["n"])
 
+                # Detect deposits
                 if spec := self.addr_to_vault_spec.get(addr):
                     self.vault_utxos[op] = (
                         utxo := VaultUtxo(
@@ -423,6 +427,10 @@ class VaultsState:
                 elif trigger := self.vault_outpoint_to_good_trigger.get(spent_op):
                     assert trigger.trigger_tx
                     if txid != trigger.trigger_tx.rehash():
+                        log.warning(
+                            "got bad trigger! expected\n%s",
+                            trigger.trigger_tx.pformat())
+                        log.warning("got bad trigger! got\n%s", ctx.pformat())
                         self.mark_vault_theft(spent, ctx)
                     else:
                         self.mark_vault_good_trigger(spent, trigger, height)
@@ -500,6 +508,9 @@ class VaultsState:
 
 @dataclass
 class ChainMonitor:
+    """
+    Fetches data from a bitcoin RPC to build the state of the vault.
+    """
     wallet_metadata: "WalletMetadata"
     rpc: BitcoinRPC
     addr_to_vault_spec: dict[str, VaultSpec] = field(default_factory=dict)
@@ -566,6 +577,13 @@ class ChainMonitor:
 FEE_VALUE_SATS: int = 20_000
 
 
+@dataclass
+class RecoverySpec:
+    tx: CTransaction
+    spent_vault_outpoints: list[Outpoint] = field(default_factory=list)
+    spent_fee_outpoints: list[Outpoint] = field(default_factory=list)
+
+
 def get_recovery_tx(
     config: VaultConfig,
     fees: SingleAddressWallet,
@@ -621,8 +639,10 @@ def get_recovery_tx(
         tx, spent_outputs, input_index=len(utxos), hash_type=0)
 
     fee_witness.scriptWitness.stack = [fees.sign_msg(sigmsg)]
-
-    return tx
+    return RecoverySpec(
+        tx,
+        spent_vault_outpoints=[u.outpoint for u in utxos],
+        spent_fee_outpoints=[fee_utxo.outpoint])
 
 
 def _are_all_vaultspecs(lst: t.Any) -> t.TypeGuard[list[VaultSpec]]:
@@ -689,7 +709,13 @@ def start_withdrawal(
     specs = [u.vault_spec for u in utxos]
     assert _are_all_vaultspecs(specs)
     trigger_spec = TriggerSpec(
-        specs, ctv_hash, trigger_value, revault_value, destination=dest)
+        specs,
+        ctv_hash,
+        trigger_value,
+        revault_value,
+        spent_vault_outpoints=[u.outpoint for u in utxos],
+        spent_fee_outpoints=[fee_utxo.outpoint],
+        destination=dest)
 
     trigger_out = CTxOut(nValue=trigger_value, scriptPubKey=trigger_spec.scriptPubKey)
     fee_change_out = CTxOut(nValue=fee_change, scriptPubKey=fees.fee_spk)
@@ -710,7 +736,6 @@ def start_withdrawal(
 
     trigger_spec.trigger_vout_idx = trigger_vout_idx
     trigger_spec.revault_vout_idx = revault_idx
-    trigger_spec.spent_vault_outpoints = [u.outpoint for u in utxos]
 
     spent_outputs = [u.output for u in utxos] + [fee_utxo.output]
     for i, utxo in enumerate(utxos):
@@ -754,7 +779,10 @@ def start_withdrawal(
 
     final_tx.vin[0].prevout = COutPoint(txid_to_int(tx.rehash()), trigger_vout_idx)
     final_tx.wit.vtxinwit += [core.messages.CTxInWitness()]
-    final_tx.wit.vtxinwit[0].scriptWitness.stack = trigger_spec.withdrawal_witness
+    final_tx.wit.vtxinwit[0].scriptWitness.stack = [
+        trigger_spec.taproot_info.leaves["withdraw"].script,
+        trigger_spec.taproot_info.controlblock_for_script_spend("withdraw"),
+    ]
     assert final_tx.get_standard_template_hash(0) == ctv_hash
 
     trigger_spec.trigger_tx = tx
@@ -768,10 +796,6 @@ def get_recoverable_utxo_from_theft_tx(
     Given an unrecognized trigger transaction (presumed to be a theft), create a
     VaultUtxo that can be used to spend it to the recovery path.
     """
-
-    def num_decode(inp: bytes) -> int:
-        return int.from_bytes(inp[::-1])
-
     coutp = at_risk_utxo.coutpoint
     [vin_num] = [
         i for i,
@@ -805,7 +829,6 @@ def get_recoverable_utxo_from_theft_tx(
         revault_vout_idx=revault_idx,
         trigger_tx=theft_trigger_tx,
     )
-    assert adversary_spec.recover_wit_fragment
 
     return VaultUtxo(
         Outpoint(theft_trigger_tx.rehash(), trigger_vout_idx),
@@ -826,19 +849,24 @@ TriggerId = str
 class WalletMetadata:
     config: VaultConfig
     triggers: dict[TriggerId, TriggerSpec] = field(default_factory=dict)
+    recoveries: list[RecoverySpec] = field(default_factory=list)
     address_cursor: int = 0
     filepath: Path | None = None
+
+    # In practice, you wouldn't persist this here but for the purposes of a demo
+    # it's fine.
+    fee_wallet_seed: bytes = b'\x01' * 32
 
     _json_exclude = ("filepath",)
 
     def save(self):
         assert self.filepath
-        self.filepath.write_text(Json.dumps(self, indent=2))
+        self.filepath.write_text(VSJson.dumps(self, indent=2))
         log.info("saved wallet state to %s", self.filepath)
 
     @classmethod
     def load(cls, filepath: Path) -> "WalletMetadata":
-        obj = Json.loads(filepath.read_text())
+        obj = VSJson.loads(filepath.read_text())
         obj.filepath = filepath
         return obj
 
@@ -846,9 +874,20 @@ class WalletMetadata:
         """Get all trigger addresses, including attempted theft triggers."""
         return [spec.address for spec in self.triggers.values()]
 
+    def get_vault_utxos_spent_by_triggers(self) -> set[Outpoint]:
+        return {
+            op for trig in self.triggers.values() for op in trig.spent_vault_outpoints
+        }
+
+    def get_locked_fee_outpoints(self) -> set[Outpoint]:
+        specs: list[TriggerSpec | RecoverySpec] = (
+            self.recoveries + list(self.triggers.values()))
+        return {op for spec in specs for op in spec.spent_fee_outpoints}
+
 
 # Wire up JSON serialization for the classes above.
-Json.add_allowed_classes(
+VSJson.add_allowed_classes(
+    Outpoint,
     WalletMetadata,
     VaultConfig,
     VaultSpec,
@@ -857,8 +896,6 @@ Json.add_allowed_classes(
     Path,
     PosixPath,
 )
-
-FEE_WALLET_SEED = b"\x01" + (b"\x00" * 31)
 
 
 def load(
@@ -876,7 +913,11 @@ def load(
     wallet_metadata = WalletMetadata.load(cfg_file)
     rpc = BitcoinRPC(
         net_name=wallet_metadata.config.network, service_url=BITCOIN_RPC_URL)
-    fees = SingleAddressWallet(rpc, FEE_WALLET_SEED)
+    fees = SingleAddressWallet(
+        rpc,
+        locked_utxos=[wallet_metadata.get_locked_fee_outpoints()],
+        seed=wallet_metadata.fee_wallet_seed,
+    )
     fees.rescan()
 
     monitor = ChainMonitor(wallet_metadata, rpc)
@@ -901,33 +942,48 @@ def monitor():
     next_spec = wallet_metadata.config.get_spec_for_vault_num(
         wallet_metadata.address_cursor)
 
-    def print_activity(line: str) -> None:
-        print()
-        print(f" {line}")
-        print()
+    print(
+        """
 
-    print_activity(f"[cyan bold] =>[/] next deposit address: {next_spec.address}")
+
+                 w e l c o m e
+                                t o
+                      y o u r
+                                      ▀██    ▄
+            ▄▄▄▄ ▄▄▄  ▄▄▄▄   ▄▄▄ ▄▄▄   ██  ▄██▄
+             ▀█▄  █  ▀▀ ▄██   ██  ██   ██   ██
+              ▀█▄█   ▄█▀ ██   ██  ██   ██   ██
+               ▀█    ▀█▄▄▀█▀  ▀█▄▄▀█▄ ▄██▄  ▀█▄▀
+
+
+""")
+
+    def print_activity(*lines) -> None:
+        oth = "\n     ".join(str(i) for i in lines[1:])
+        print(f" {lines[0]}\n    {oth}\n")
+
+    print_activity(f"[cyan bold]=>[/] next deposit address", next_spec.address)
     if state.vault_utxos:
-        print(" [bold]Vaulted coins[/]")
+        print(" [bold]Vaulted coins[/]\n")
         for u in state.vault_utxos.values():
             print(f"  - {u.address} ({u.value_sats} sats)")
             print(f"    outpoint: {str(u.outpoint)}")
         print()
 
     if state.trigger_utxos:
-        print(" [bold]Pending triggers[/]")
+        print(" [bold]Pending triggers[/]\n")
         for trig in state.trigger_utxos.values():
             confs = state.height - trig.height
             print(f"  - {trig.spec.address} ({confs} confs) -> {trig.spec.destination}")
         print()
 
     if state.recovered_vaults:
-        print("Recovered vaults")
+        print("[bold]Recovered vaults[/]\n")
         for u in state.recovered_vaults:
             print(f"  - {str(u)}")
         print()
 
-    print(f"[green bold] $$[/] fee wallet ({fees.fee_addr})")
+    print(f"[green bold] $$[/] fee wallet address: {fees.fee_addr}")
     for u in fees.utxos[:3]:
         print(f"  - {u.value_sats}: {u.outpoint_str}")
     print()
@@ -947,7 +1003,7 @@ def monitor():
 
         if needs_save:
             print_activity(
-                f"[bold]✔ [/] found that withdrawal {trig_utxo} has completed")
+                f"[bold]✔ [/] found that withdrawal has completed", trig_utxo)
             # Save performed below
 
     wallet_metadata.save()
@@ -984,8 +1040,9 @@ def monitor():
                     raise
             else:
                 print_activity(
-                    f"[bold]❏ [/] submitted trigger txn ({tx.rehash()}) "
-                    f"for {trig_spec.destination}")
+                    f"[bold]❏ [/] submitted trigger txn for",
+                    trig_spec.destination,
+                    f"(txid={tx.rehash()})")
                 trig_spec.broadcast_trigger_at = datetime.datetime.utcnow()
                 wallet_metadata.save()
 
@@ -1003,47 +1060,54 @@ def monitor():
                 wallet_metadata.save()
 
             if is_mature and txid not in trigger_txids_completed:
-                print_activity(f"[yellow]✅ [/] trigger {trig_utxo} has matured ")
+                print_activity(f"[yellow]✅[/] trigger has matured", trig_utxo)
                 print_activity(
-                    f"[bold]<-[/] broadcasting withdrawal txn ({finaltx.rehash()})")
+                    f"[bold]<-[/] broadcasting withdrawal txn", finaltx.rehash())
                 rpc.sendrawtransaction(finaltx.tohex())
                 trigger_txids_completed.add(txid)
             elif new_state.height != state.height:
                 print_activity(
-                    f"[bold]--[/] trigger {spec.destination} has {confs} confs ({left}) to go"
+                    f"[bold]--[/] trigger has {confs} confs ({left} to go)",
+                    f"(txid={txid})",
+                    spec.destination,
                 )
 
         # Mark completed withdrawals as such.
         for trig_utxo in (has_new := new_values("txid_to_completed_trigger")):
             spec = trig_utxo.spec
-            print_activity(f"[blue]✅[/] withdrawal to {spec.destination} completed")
+            print_activity(f"[blue]✅[/] withdrawal completed", spec.destination)
             wallet_metadata.triggers[
                 spec.id].saw_withdrawn_at = datetime.datetime.utcnow()
             wallet_metadata.save()
 
         # Check for new vault deposits.
         for newv in (has_new := new_values("vault_utxos")):
-            print_activity(f"[green]$$[/] saw new deposit: {newv}")
+            print_activity(f"[green]$$[/] saw new deposit", newv)
             wallet_metadata.address_cursor += 1
 
         if has_new:
             wallet_metadata.save()
             next_spec = wallet_metadata.config.get_spec_for_vault_num(
                 wallet_metadata.address_cursor)
-            print_activity(f"[bold]▢ [/] new deposit address: {next_spec.address}")
+            print_activity(f"[bold]▢ [/] new deposit address", next_spec.address)
 
         # Alert on unrecognized spends.
         for theft_utxo, tx in state.theft_trigger_utxos.items():
             # TODO cooler alerting here
             print_activity(
-                f" [red bold]!![/] detected unrecognized spend (txid={tx.rehash()})!\n"
-                "    you might be hacked! run `recover` now!")
+                f" [red bold]!![/] detected unrecognized spend!",
+                "  you might be hacked! run `recover` now!",
+                f"(bad txid={tx.rehash()})")
 
         if new_state.recovered_vaults and not new_state.vault_utxos:
             print()
-            print(" [cyan bold]✔✔[/] vault configuration fully recovered.")
-            print("check your opsec, change your trigger key, and start over!")
-            # FIXME recovered_vaults seems to be missing some coins here.
+            print_activity(
+                "[cyan bold]✔✔[/] vault configuration fully recovered",
+                f"recovered to: [blue]{wallet_metadata.config.recov_address}[/]",
+                "",
+                "check your opsec, change your trigger key, and start over!"
+            )
+            print(" vaults recovered:")
             for recovered in new_state.recovered_vaults:
                 print(f"  - {recovered}")
             print()
@@ -1073,6 +1137,13 @@ def _cli_start_withdrawal(to_addr, amount_sats, simulate_theft: bool = False):
 
     # Use random coin selection to cover the amount.
     wallet_utxos = list(state.vault_utxos.values())
+
+    if not simulate_theft:
+        already_locked = wallet_metadata.get_vault_utxos_spent_by_triggers()
+        # If we aren't thieving, exclude UTXOs that are already locked by other
+        # pending triggers.
+        wallet_utxos = [u for u in wallet_utxos if u.outpoint not in already_locked]
+
     utxos = []
     while amount_sats > 0:
         random.shuffle(wallet_utxos)
@@ -1126,22 +1197,23 @@ def recover(outpoint: str = ""):
             print("failed to find utxo!")
             sys.exit(1)
 
-    print("Recovering...")
+    print("\nRecovering...")
     for u in utxos:
         print(f"  - {u}")
 
-    phrase = input('Enter recovery phrase: ')
+    print()
+    phrase = input('Enter recovery phrase (check `secrets.json`): ')
     recovery_privkey = recoveryauth_phrase_to_key(phrase).get_bytes()
 
     def recoveryauth_signer(msg: bytes) -> bytes:
         """Prompt the user for the recovery phrase."""
         return core.key.sign_schnorr(recovery_privkey, msg)
 
-    tx = get_recovery_tx(wallet_metadata.config, fees, utxos, recoveryauth_signer)
-    tx.rehash()
+    spec = get_recovery_tx(wallet_metadata.config, fees, utxos, recoveryauth_signer)
+    wallet_metadata.recoveries.append(spec)
 
-    rpc.sendrawtransaction(tx.tohex())
-    print(f"recovery txn ({tx.rehash()}) now in mempool - mine some blocks")
+    rpc.sendrawtransaction(spec.tx.tohex())
+    print(f"recovery txn ({spec.tx.rehash()}) now in mempool - mine some blocks")
 
 
 if __name__ == "__main__":

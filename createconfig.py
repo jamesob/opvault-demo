@@ -6,6 +6,7 @@ from pathlib import Path
 
 from bip32 import BIP32
 from clii import App
+from rich import print
 
 from main import VaultConfig, recoveryauth_phrase_to_key, WalletMetadata
 
@@ -53,6 +54,7 @@ def main(
         trigger_xpub=trig32.get_xpub(),
     )
     WalletMetadata(config, filepath=Path(filepath)).save()
+    print(f"\n[green]✅[/] wrote vault configuration and state to {filepath}")
 
     secpath = Path(secretspath)
     secd = {}
@@ -64,6 +66,8 @@ def main(
         'recoveryauth_phrase': recoveryauth_phrase,
     }
     secpath.write_text(json.dumps(secd, indent=2))
+
+    print(f"[green]✅ [/]wrote secrets to {secpath}\n")
 
 
 if __name__ == "__main__":
