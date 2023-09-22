@@ -9,7 +9,7 @@ RUN groupadd -g $GID -o $UNAME && \
   adduser $UNAME sudo
 
 USER $UNAME
-WORKDIR /home/$UNAME
+WORKDIR /home/$UNAME/app
 COPY --chown=$UNAME:$GID ./requirements.txt .
 RUN pip install -r requirements.txt
 CMD ./main.py

@@ -22,7 +22,7 @@ services:
         - UID
         - GID
     volumes:
-      - ./:/home/user
+      - ./:/home/user/app
       # Share bitcoin's datadir so that we can make RPC calls with cookie credentials.
       - ./bitcoin-datadir:/home/user/.bitcoin
     links:
