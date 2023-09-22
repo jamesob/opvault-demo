@@ -7,7 +7,7 @@ build() {
     echo
   fi
   mkdir -p bitcoin-datadir
-  docker-compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g)
+  docker-compose build --build-arg UID=$(id -u) --build-arg GID=$(id -g) $@
 }
 
 start-bitcoin() {
@@ -81,7 +81,7 @@ all other commands will happen in another:
 
 Fund the fee wallet:
 
-  source ./aliases.sh
+  source ./aliases.sh -q
   bitcoin-cli createwallet fees
   mine 200 [fee address printed above]
 
@@ -115,7 +115,8 @@ vault-help() {
 
 clean() {
     docker-compose down
-    rm -r bitcoin-datadir config.json secrets.json
+    rm -rf bitcoin-datadir config.json secrets.json \
+      .local .bash_history .mypy_cache __pycache__
 }
 
 if [ "$1" != "-q" ]; then
