@@ -21,7 +21,7 @@ from verystable.rpc import BitcoinRPC, JSONRPCError
 from verystable.core import script
 from verystable.core.script import CScript
 from verystable.core.messages import COutPoint, CTxOut, CTxIn
-from verystable.wallet import SingleAddressWallet
+from verystable.wallet import SingleAddressWallet, Outpoint
 from verystable.serialization import VSJson
 from rich import print
 
@@ -173,21 +173,6 @@ class PaymentDestination:
             nValue=self.value_sats,
             scriptPubKey=core.address.address_to_scriptpubkey(self.addr),
         )
-
-
-@dataclass(frozen=True)
-class Outpoint:
-    txid: str
-    n: int
-
-    def __str__(self) -> str:
-        return f"{self.txid}:{self.n}"
-
-    def __hash__(self) -> int:
-        return hash(str(self))
-
-    def __eq__(self, o) -> bool:
-        return self.__dict__ == o.__dict__
 
 
 @dataclass
