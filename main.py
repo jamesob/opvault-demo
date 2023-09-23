@@ -1055,8 +1055,16 @@ def monitor():
                 print_activity("[yellow]✅[/] trigger has matured", trig_utxo)
                 print_activity(
                     "[bold]<-[/] broadcasting withdrawal txn", finaltx.rehash())
-                rpc.sendrawtransaction(finaltx.tohex())
-                trigger_txids_completed.add(txid)
+                try:
+                    rpc.sendrawtransaction(finaltx.tohex())
+                except Exception:
+                    log.exception("failed to broadcast withdrawal for %s", trig_utxo)
+                    print_activity(
+                        "[yellow bold]!![/] failed to broadcast withdrawal transaction",
+                        "run the following to save the trigger:",
+                        f"`./main.py recover --outpoint {str(trig_utxo.outpoint)}`")
+                else:
+                    trigger_txids_completed.add(txid)
             elif new_state.height != state.height:
                 print_activity(
                     f"[bold]--[/] trigger has {confs} confs ({left} to go)",
