@@ -6,6 +6,11 @@ vaults.
 
 ![2023-09-20_22-09-1695263894](https://github.com/jamesob/opvault-demo/assets/73197/52a72935-70b8-4736-ab47-11e72fb8d84b)
 
+## Screencast
+
+[![opvault demo](https://img.youtube.com/vi/7Zwm5iHFyBQ/0.jpg)](https://www.youtube.com/watch?v=7Zwm5iHFyBQ)
+
+
 ## Install and use
 
 ### The easy way
