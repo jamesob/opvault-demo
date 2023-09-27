@@ -467,14 +467,8 @@ class VaultsState:
 
     def mark_trigger_recovered(self, spent_trigger: VaultUtxo, txid: str) -> None:
         log.info("found recovery of triggered vault %s", spent_trigger)
-        self.trigger_utxos.pop(spent_trigger.outpoint)
-        assert (spec := spent_trigger.trigger_spec)
-
-        assert spec.spent_vault_outpoints
-        for spent_vault_op in spec.spent_vault_outpoints:
-            assert spent_vault_op
-            spent = self.vault_utxos.pop(spent_vault_op)
-            self.recovered_vaults[spent] = txid
+        spent = self.trigger_utxos.pop(spent_trigger.outpoint)
+        self.recovered_vaults[spent] = txid
 
     def mark_trigger_completed(self, spent_trigger: VaultUtxo, txid: str) -> None:
         log.info("found completed trigger %s", spent_trigger)
