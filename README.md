@@ -1,7 +1,7 @@
 # opvault-demo
 
 A minimal (and for test use only!) example wallet that makes use of 
-[BIP-345 (`OP_VAULT`)](https://bip345.com) to provide reactive security with
+[BIP-345 (`OP_VAULT`)](http://bip345.com) to provide reactive security with
 vaults.
 
 ## Screencast
