@@ -578,7 +578,7 @@ def get_recovery_tx(
     assert fee_change > 0
 
     tx = CTransaction()
-    tx.nVersion = 2
+    tx.version = 2
     tx.vin = [u.as_txin for u in utxos] + [fee_utxo.as_txin]
     tx.vout = [
         CTxOut(nValue=total_sats, scriptPubKey=recov_spk),
@@ -682,7 +682,7 @@ def start_withdrawal(
     # the withdrawal into place.
 
     final_tx = CTransaction()
-    final_tx.nVersion = 2
+    final_tx.version = 2
     final_tx.vin = [CTxIn(nSequence=config.spend_delay)]
     final_tx.vout = [dest.as_vout()]
     ctv_hash = final_tx.get_standard_template_hash(0)
@@ -704,7 +704,7 @@ def start_withdrawal(
     revault_idx = None
 
     tx = CTransaction()
-    tx.nVersion = 2
+    tx.version = 2
     tx.vin = [u.as_txin for u in utxos] + [fee_utxo.as_txin]
     tx.vout = [trigger_out, fee_change_out]
     trigger_vout_idx = 0
