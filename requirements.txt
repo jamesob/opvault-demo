@@ -1,4 +1,4 @@
-verystable@git+https://github.com/jamesob/verystable
+verystable==28.1.0-dev
 bip32
 clii
 rich
